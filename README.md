@@ -10,7 +10,7 @@ Steps to Run Code:
   --url "URL/to/dataset.zip" \
   --dataset "dataset_name"
 
-What happens:
+What happens: (Langchain)
 -Downloads ZIP/TAR.
 -Extracts and finds class subfolders (real/fake)
 -Splits data (70/20/10)
