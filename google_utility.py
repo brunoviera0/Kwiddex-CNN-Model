@@ -1,6 +1,6 @@
 from google.cloud import storage
 
-# ====== PROJECT + BUCKET INFO ======
+#project and bucket info
 GCP_PROJECT = "sentiment-analysis-379200"  
 BUCKET_NAME = "kwiddex-datasets"            
 

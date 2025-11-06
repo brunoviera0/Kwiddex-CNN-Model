@@ -1,2 +1,9 @@
+
+SET UP GOOGLE CLOUD
 gcloud auth application-default login
 gcloud config set project sentiment-analysis-379200
+
+HOW TO RUN DATASET_PIPELINE.PY
+python dataset_pipeline.py \
+  --url "URL-to-download-dataset-ZIP" \
+  --dataset "Dataset_name"

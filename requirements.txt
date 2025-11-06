@@ -3,3 +3,8 @@ torchvision==0.18.1
 google-cloud-storage==2.18.2
 tqdm==4.66.5
 scikit-learn==1.5.2
+langchain 
+google-cloud-storage 
+tqdm 
+requests 
+zipfile36
