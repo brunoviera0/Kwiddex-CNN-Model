@@ -3,15 +3,20 @@ import torch.nn as nn
 import torch.optim as optim
 from torchvision import models
 from tqdm import tqdm
+import os
 from dataset_manager import get_dataloaders
 
-#parameters
+# Environment variables define dataset
+dataset_name = os.environ["KWX_DATASET"]
+dtr, dval, dte, classes = get_dataloaders(dataset_name, batch_size=32, num_workers=2)
+
+# Parameters
 NUM_EPOCHS   = 15
 LR           = 1e-4
 WEIGHT_DECAY = 1e-4
 MODEL_SAVE   = "best_real_fake_resnet18.pt"
+DEVICE       = "cuda" if torch.cuda.is_available() else "cpu"
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 def train_one_epoch(model, dataloader, optimizer, criterion):
     model.train()
@@ -29,6 +34,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion):
         total_samples += imgs.size(0)
     return total_loss / total_samples, total_correct / total_samples
 
+
 def evaluate(model, dataloader, criterion):
     model.eval()
     total_loss, total_correct, total_samples = 0, 0, 0
@@ -43,10 +49,10 @@ def evaluate(model, dataloader, criterion):
             total_samples += imgs.size(0)
     return total_loss / total_samples, total_correct / total_samples
 
+
 def main():
-    dataloaders, class_names = get_dataloaders()
     model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
-    model.fc = nn.Linear(model.fc.in_features, len(class_names))
+    model.fc = nn.Linear(model.fc.in_features, len(classes))
     model = model.to(DEVICE)
 
     criterion = nn.CrossEntropyLoss()
@@ -58,8 +64,8 @@ def main():
 
     for epoch in range(NUM_EPOCHS):
         print(f"\nEpoch {epoch+1}/{NUM_EPOCHS}")
-        train_loss, train_acc = train_one_epoch(model, dataloaders["train"], optimizer, criterion)
-        val_loss, val_acc = evaluate(model, dataloaders["val"], criterion)
+        train_loss, train_acc = train_one_epoch(model, dtr, optimizer, criterion)
+        val_loss, val_acc = evaluate(model, dval, criterion)
         scheduler.step()
         print(f"Train acc: {train_acc*100:.2f}% | Val acc: {val_acc*100:.2f}%")
 
@@ -70,8 +76,10 @@ def main():
             print("Saved best model checkpoint.")
 
     model.load_state_dict(best_state)
-    test_loss, test_acc = evaluate(model, dataloaders["test"], criterion)
+    test_loss, test_acc = evaluate(model, dte, criterion)
     print(f"\nFinal test accuracy: {test_acc*100:.2f}%")
+
 
 if __name__ == "__main__":
     main()
+
