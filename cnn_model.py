@@ -57,11 +57,16 @@ def main():
     model.fc = nn.Linear(model.fc.in_features, len(classes))
     model = model.to(DEVICE)
 
+    model.fc = nn.Sequential(
+    nn.Dropout(0.5),
+    nn.Linear(model.fc.in_features, len(classes))
+)
+
     # Class weights to compensate for dataset imbalance
     # Real ≈ 825, Fake ≈ 163 ⇒ ~5:1 ratio
     # Class weights = [1.0, 5.0] so mistakes on fake class are penalized more
-    class_weights = torch.tensor([1.0, 5.0], dtype=torch.float32).to(DEVICE)
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    # class_weights = torch.tensor([1.0, 5.0], dtype=torch.float32).to(DEVICE)
+    criterion = nn.CrossEntropyLoss()
 
     best_acc = 0.0
     best_state = model.state_dict()
