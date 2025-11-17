@@ -66,7 +66,6 @@ def main():
     # Real ≈ 825, Fake ≈ 163 ⇒ ~5:1 ratio
     # Class weights = [1.0, 5.0] so mistakes on fake class are penalized more
     #  class_weights = torch.tensor([1.0, 5.0], dtype=torch.float32).to(DEVICE)
->>>>>>> 9b7d0ff (remove weights from model)
     criterion = nn.CrossEntropyLoss()
 
     best_acc = 0.0
