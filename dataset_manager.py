@@ -1,117 +1,149 @@
 import os
-import argparse
+import json
+import shutil
 from pathlib import Path
-from typing import Tuple, List
 
 from google.cloud import storage
+from torchvision import transforms, datasets
 from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
 
 
 def _required_env(name: str) -> str:
     v = os.environ.get(name)
     if not v:
         raise RuntimeError(
-            f"Environment variable {name} is required.\n"
-            f'  Example:\n'
-            f'    export KWX_DATA_BASE="data/full_dataset"\n'
-            f'    export KWX_BUCKET="kwiddex-datasets"\n'
+            f"Environment variable '{name}' is required.\n"
+            f'Example:\n'
+            f'  export KWX_DATA_BASE="data/full_dataset"\n'
+            f'  export KWX_BUCKET="kwiddex-datasets"\n'
         )
     return v
 
 
-def _has_local_structure(root: Path) -> bool:
-    return (root / "train").is_dir() and (root / "val").is_dir() and (root / "test").is_dir()
-
-
-def _download_dataset_from_gcs(bucket_name: str, dataset_name: str, local_base: Path) -> None:
+def _sync_from_gcs(dataset_name: str, dst_root: Path):
+    """Download the dataset directory from GCS if not already cached locally."""
+    bucket_name = _required_env("KWX_BUCKET")
     client = storage.Client()
     bucket = client.bucket(bucket_name)
 
     prefix = f"{dataset_name}/"
-    dest_root = local_base / dataset_name
-    dest_root.mkdir(parents=True, exist_ok=True)
 
-    # List and download all blobs under the dataset prefix
+    print(f"Checking for dataset in GCS bucket: {bucket_name}/{prefix}")
+
     blobs = list(bucket.list_blobs(prefix=prefix))
     if not blobs:
-        raise FileNotFoundError(
-            f"No objects found in gs://{bucket_name}/{prefix}\n"
-            f"Did you run the dataset pipeline for '{dataset_name}'?"
-        )
-
-    print(f"Syncing from gs://{bucket_name}/{prefix} to {dest_root}")
-
-    for b in blobs:
-        if b.name.endswith("/"):
-            continue
-        rel = b.name[len(prefix):]
-        dest_path = dest_root / rel
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        b.download_to_filename(str(dest_path))
-
-    if not _has_local_structure(dest_root):
         raise RuntimeError(
-            f"Downloaded dataset does not contain expected train/ val/ test/ under {dest_root}."
+            f"Dataset '{dataset_name}' not found in bucket '{bucket_name}'."
         )
 
+    if dst_root.exists():
+        print(f"Local cache found: {dst_root}")
+        return
 
-def get_dataloaders(
-    dataset_name: str,
-    batch_size: int = 32,
-    num_workers: int = 0,
-    img_size: int = 256,
-):
-    local_base = Path(_required_env("KWX_DATA_BASE"))
-    bucket_name = _required_env("KWX_BUCKET")
+    print(f"Downloading dataset to local directory: {dst_root}")
+    dst_root.mkdir(parents=True, exist_ok=True)
 
-    root = local_base / dataset_name
+    for blob in blobs:
+        rel = blob.name[len(prefix):]
+        if not rel:  
+            continue
+        local_path = dst_root / rel
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        blob.download_to_filename(str(local_path))
 
-    if not _has_local_structure(root):
-        _download_dataset_from_gcs(bucket_name=bucket_name,
-                                   dataset_name=dataset_name,
-                                   local_base=local_base)
+    print("Download complete.")
 
-    tf_train = transforms.Compose([
+def get_dataloaders(dataset_name: str,
+                    batch_size: int = 32,
+                    num_workers: int = 2,
+                    img_size: int = 256):
+
+    base_dir = Path(_required_env("KWX_DATA_BASE"))
+    dataset_dir = base_dir / dataset_name
+
+    #Ensure dataset exists locally
+    _sync_from_gcs(dataset_name, dataset_dir)
+
+    #Load class mapping (fake = 0, real = 1)
+    mapping_path = dataset_dir / "class_mapping.json"
+    if not mapping_path.exists():
+        raise RuntimeError("class_mapping.json missing — dataset is incomplete.")
+
+    with open(mapping_path, "r") as f:
+        mapping = json.load(f)
+
+    classes = mapping["final_order"]   # ['fake', 'real']
+    print(f"Classes: {classes}")
+
+    #augmentation and transforms
+
+    imagenet_mean = [0.485, 0.456, 0.406]
+    imagenet_std  = [0.229, 0.224, 0.225]
+
+    train_tf = transforms.Compose([
         transforms.Resize((img_size, img_size)),
-        transforms.RandomHorizontalFlip(),
+        transforms.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.15),
+        transforms.RandomRotation(8),
+        transforms.RandomResizedCrop(img_size, scale=(0.85, 1.0)),
         transforms.ToTensor(),
+        transforms.Normalize(mean=imagenet_mean, std=imagenet_std),
     ])
-    tf_eval = transforms.Compose([
+
+    eval_tf = transforms.Compose([
         transforms.Resize((img_size, img_size)),
         transforms.ToTensor(),
+        transforms.Normalize(mean=imagenet_mean, std=imagenet_std),
     ])
 
-    train_dir = root / "train"
-    val_dir   = root / "val"
-    test_dir  = root / "test"
+    #building datasets
+    train_path = dataset_dir / "train"
+    val_path   = dataset_dir / "val"
+    test_path  = dataset_dir / "test"
 
-    ds_train = datasets.ImageFolder(str(train_dir), transform=tf_train)
-    ds_val   = datasets.ImageFolder(str(val_dir),   transform=tf_eval)
-    ds_test  = datasets.ImageFolder(str(test_dir),  transform=tf_eval)
+    if not train_path.exists():
+        raise RuntimeError("Training folder missing — pipeline did not complete.")
 
-    dl_train = DataLoader(ds_train, batch_size=batch_size, shuffle=True,  num_workers=num_workers)
-    dl_val   = DataLoader(ds_val,   batch_size=batch_size, shuffle=False, num_workers=num_workers)
-    dl_test  = DataLoader(ds_test,  batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    d_train = datasets.ImageFolder(train_path, transform=train_tf)
+    d_val   = datasets.ImageFolder(val_path, transform=eval_tf)
+    d_test  = datasets.ImageFolder(test_path, transform=eval_tf)
 
-    return dl_train, dl_val, dl_test, ds_train.classes
-
-
-if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="Kwiddex dataloader")
-    ap.add_argument("dataset_name", help="Name under the bucket and local base (e.g., receipt_forgery)")
-    ap.add_argument("--batch", type=int, default=32)
-    ap.add_argument("--workers", type=int, default=0)
-    ap.add_argument("--size", type=int, default=256)
-    args = ap.parse_args()
-
-    dtr, dval, dte, classes = get_dataloaders(
-        dataset_name=args.dataset_name,
-        batch_size=args.batch,
-        num_workers=args.workers,
-        img_size=args.size,
+    train_loader = DataLoader(
+        d_train, batch_size=batch_size, shuffle=True,
+        num_workers=num_workers, pin_memory=True
     )
 
-    print(f"Classes: {classes}")
-    print(f"Train: {len(dtr.dataset)} | Val: {len(dval.dataset)} | Test: {len(dte.dataset)}")
+    val_loader = DataLoader(
+        d_val, batch_size=batch_size, shuffle=False,
+        num_workers=num_workers, pin_memory=True
+    )
+
+    test_loader = DataLoader(
+        d_test, batch_size=batch_size, shuffle=False,
+        num_workers=num_workers, pin_memory=True
+    )
+
+    #Simple summary
+    print(f"Train: {len(d_train)} images")
+    print(f"Val:   {len(d_val)} images")
+    print(f"Test:  {len(d_test)} images")
+
+    return train_loader, val_loader, test_loader, classes
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Debug Kwiddex Dataloader")
+    parser.add_argument("dataset", help="Dataset name (folder in bucket)")
+    parser.add_argument("--batch", type=int, default=16)
+    parser.add_argument("--workers", type=int, default=2)
+    parser.add_argument("--size", type=int, default=256)
+
+    args = parser.parse_args()
+
+    get_dataloaders(
+        dataset_name=args.dataset,
+        batch_size=args.batch,
+        num_workers=args.workers,
+        img_size=args.size
+    )
 
