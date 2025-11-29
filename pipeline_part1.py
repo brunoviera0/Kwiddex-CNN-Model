@@ -19,6 +19,7 @@ bucket = client.bucket(BUCKET_NAME)
 
 
 def download_file(url, dest_path):
+    # If URL is already in our GCS bucket
     if "storage.googleapis.com/kwiddex-datasets" in url:
         blob_name = url.split("kwiddex-datasets/")[-1]
         blob = bucket.blob(blob_name)
@@ -26,7 +27,7 @@ def download_file(url, dest_path):
         blob.download_to_filename(dest_path)
         print(f"Downloaded from GCS bucket: {blob_name}")
     else:
-        # HTTPS download
+        # Plain HTTPS download
         r = requests.get(url, stream=True)
         r.raise_for_status()
         total = int(r.headers.get("content-length", 0))
@@ -51,16 +52,45 @@ def extract_archive(archive_path, extract_to):
     print("Extracted dataset to:", extract_to)
 
 
+def find_font_root(extract_dir):
+    """
+    Try to find the 'Font Dataset Large' folder that has the 48 font folders.
+    If not found, fall back to the first subdirectory.
+    """
+    candidates = []
+    target_root = None
+
+    for d in os.listdir(extract_dir):
+        full = os.path.join(extract_dir, d)
+        if os.path.isdir(full):
+            candidates.append(full)
+            name_norm = d.strip().lower()
+            if name_norm == "font dataset large" or name_norm == "font_dataset_large":
+                target_root = full
+
+    if target_root is not None:
+        print(f"Found 'Font Dataset Large' at: {target_root}")
+        return target_root
+
+    if len(candidates) == 1:
+        print(f"Warning: 'Font Dataset Large' not found, using: {candidates[0]}")
+        return candidates[0]
+
+    if len(candidates) > 1:
+        print("Warning: 'Font Dataset Large' not found, using first subdir:", candidates[0])
+        return candidates[0]
+
+    print("Warning: No subdirectories found, using extract_dir itself.")
+    return extract_dir
+
+
 def split_dataset(base_dir):
-    """Generic splitter: base_dir contains one subfolder per class."""
-    classes = [d for d in os.listdir(base_dir)
-               if os.path.isdir(os.path.join(base_dir, d))]
+    classes = [d for d in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, d))]
     result = {s: {c: [] for c in classes} for s in SPLITS.keys()}
 
     for cls in classes:
         src = os.path.join(base_dir, cls)
-        files = [f for f in os.listdir(src)
-                 if os.path.isfile(os.path.join(src, f))]
+        files = [f for f in os.listdir(src) if os.path.isfile(os.path.join(src, f))]
         random.shuffle(files)
         n = len(files)
         n_train = int(n * SPLITS["train"])
@@ -93,45 +123,14 @@ def write_manifest(split_map, dataset_name):
     manifest_blob = bucket.blob(f"{dataset_name}/manifest.json")
     manifest_blob.upload_from_string(
         json.dumps(manifest, indent=2),
-        content_type="application/json",
+        content_type="application/json"
     )
     print("Uploaded manifest.json:")
     print(json.dumps(manifest, indent=2))
 
 
-def find_root_for_dataset(extract_dir, dataset_name):
-    """
-    Decide which folder to treat as the 'class root' depending on dataset.
-    For font_recognition, we want the 'Font Dataset Large' folder.
-    For others, keep your original 'first subdir' logic.
-    """
-    # All immediate subdirs under the extracted dir
-    subdirs = [os.path.join(extract_dir, d)
-               for d in os.listdir(extract_dir)
-               if os.path.isdir(os.path.join(extract_dir, d))]
-
-    if dataset_name == "font_recognition":
-        # Try to find the Kaggle folder 'Font Dataset Large'
-        for d in subdirs:
-            name = os.path.basename(d)
-            if "font_recognition" in name:
-                print(f"Using font root folder: {d}")
-                return d
-        # Fallback: if we did not find it, just use extract_dir
-        print("Warning: 'Font Dataset Large' not found, falling back to extract_dir.")
-        return extract_dir
-
-    # Default behavior for other datasets: same as your old code
-    if subdirs:
-        root = subdirs[0]
-    else:
-        root = extract_dir
-    print(f"Using generic root folder: {root}")
-    return root
-
-
 def main():
-    parser = argparse.ArgumentParser(description="Kwiddex Dataset Pipeline")
+    parser = argparse.ArgumentParser(description="Kwiddex Font Dataset Pipeline")
     parser.add_argument("--url", required=True, help="URL of dataset zip/tar file")
     parser.add_argument("--dataset", required=True, help="Dataset name (folder name in bucket)")
     args = parser.parse_args()
@@ -144,10 +143,9 @@ def main():
         os.makedirs(extract_dir, exist_ok=True)
         extract_archive(archive_path, extract_dir)
 
-        # Choose the correct root directory for splitting
-        root = find_root_for_dataset(extract_dir, args.dataset)
+        # find the font root folder that holds the 48 font subfolders
+        root = find_font_root(extract_dir)
 
-        # Split, upload, and write manifest
         split_map = split_dataset(root)
         upload_to_gcs(split_map, args.dataset)
         write_manifest(split_map, args.dataset)
