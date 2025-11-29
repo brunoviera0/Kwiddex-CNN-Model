@@ -114,7 +114,7 @@ def find_root_for_dataset(extract_dir, dataset_name):
         # Try to find the Kaggle folder 'Font Dataset Large'
         for d in subdirs:
             name = os.path.basename(d)
-            if "Font Dataset Large" in name:
+            if "font_recognition" in name:
                 print(f"Using font root folder: {d}")
                 return d
         # Fallback: if we did not find it, just use extract_dir
