@@ -1,3 +1,5 @@
+***Slightly outdated README, working on pushing out one that is more informative and relevant***
+
 Steps to Run Code:
 
 1. SSH into VM instance within the Google Cloud Compute Engine
