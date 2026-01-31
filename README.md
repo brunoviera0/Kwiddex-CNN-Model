@@ -2,6 +2,11 @@ This project classifies documents as "real" or "fake" using a fine-tuned CNN.
 It includes pipelines for dataset processing, model training, evaluation, and
 a REST API for inference.
 
+IMPORTANT: Never commit the private key.
+Add private key to .gitignore:
+echo "keys/kwiddex_private.pem" >> .gitignore
+
+
 
 STEPS TO RUN CODE
 
