@@ -1,0 +1,154 @@
+import hashlib
+import uuid
+import json
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, Tuple
+
+USERS_FILE = Path("users.json")
+
+def hash_password(password: str, salt: str) -> str: #Hash password with salt using SHA-256
+    return hashlib.sha256((password + salt).encode()).hexdigest()
+
+
+def generate_user_id() -> str:
+    return f"USR-{uuid.uuid4().hex[:12].upper()}"
+
+
+def generate_salt() -> str:
+    return uuid.uuid4().hex
+
+
+def load_users() -> dict:
+    if not USERS_FILE.exists():
+        return {}
+    with open(USERS_FILE, "r") as f:
+        return json.load(f)
+
+
+def save_users(users: dict) -> None:
+    with open(USERS_FILE, "w") as f:
+        json.dump(users, f, indent=2)
+
+
+
+def create_user(username: str, password: str) -> Tuple[bool, str]:
+    users = load_users()
+    
+    if username in users:
+        return False, "Username already exists"
+    
+
+    if len(username) < 3:
+        return False, "Username must be at least 3 characters"
+    if len(password) < 8:
+        return False, "Password must be at least 8 characters"
+    
+    #create user
+    user_id = generate_user_id()
+    salt = generate_salt()
+    password_hash = hash_password(password, salt)
+    
+    users[username] = {
+        "user_id": user_id,
+        "password_hash": password_hash,
+        "salt": salt,
+        "created_at": datetime.utcnow().isoformat() + "Z",
+        "active": True
+    }
+    
+    save_users(users)
+    
+    return True, user_id
+
+
+def authenticate(username: str, password: str) -> Tuple[bool, Optional[str]]:
+    users = load_users()
+    
+    if username not in users:
+        return False, None
+    
+    user = users[username]
+    
+    if not user.get("active", True):
+        return False, None
+    
+    password_hash = hash_password(password, user["salt"])
+    
+    if password_hash == user["password_hash"]:
+        return True, user["user_id"]
+    
+    return False, None
+
+
+def get_user_id(username: str) -> Optional[str]:
+    users = load_users()
+    if username in users:
+        return users[username]["user_id"]
+    return None
+
+
+def deactivate_user(username: str) -> bool:
+    users = load_users()
+    if username not in users:
+        return False
+    users[username]["active"] = False
+    save_users(users)
+    return True
+
+
+def list_users() -> list:
+    users = load_users()
+    return [
+        {"username": u, "user_id": data["user_id"], "active": data["active"]}
+        for u, data in users.items()
+    ]
+
+
+
+if __name__ == "__main__":
+    import sys
+    
+    #usage of code
+    if len(sys.argv) < 2:
+        print("Kwiddex Secure Login")
+        print("Usage:")
+        print("  python auth.py create <username> <password>")
+        print("  python auth.py login <username> <password>")
+        print("  python auth.py list")
+        sys.exit(0)
+    
+    command = sys.argv[1].lower()
+    
+    if command == "create" and len(sys.argv) >= 4:
+        username = sys.argv[2]
+        password = sys.argv[3]
+        success, result = create_user(username, password)
+        if success:
+            print(f"User created successfully")
+            print(f"User ID: {result}")
+        else:
+            print(f"Error: {result}")
+    
+    elif command == "login" and len(sys.argv) >= 4:
+        username = sys.argv[2]
+        password = sys.argv[3]
+        success, user_id = authenticate(username, password)
+        if success:
+            print(f"Login successful")
+            print(f"User ID: {user_id}")
+        else:
+            print("Invalid username or password")
+    
+    elif command == "list":
+        users = list_users()
+        if not users:
+            print("No users found")
+        else:
+            print("Users:")
+            for u in users:
+                status = "active" if u["active"] else "inactive"
+                print(f"  {u['username']} ({u['user_id']}) - {status}")
+    
+    else:
+        print("Invalid command. Run without arguments for help.")

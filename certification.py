@@ -17,6 +17,9 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import inch
 
+from reportlab.lib.utils import ImageReader
+from PIL import Image
+
 
 #config
 KEYS_DIR = Path("keys")
@@ -252,6 +255,59 @@ def create_certificate_page(certificate: dict) -> bytes:
     c.save()
     return buffer.getvalue()
 
+
+
+
+def image_to_pdf(image_content: bytes) -> bytes:
+    img = Image.open(io.BytesIO(image_content))
+    
+    if img.mode in ('RGBA', 'LA', 'P'):
+        img = img.convert('RGB')
+    
+    img_width, img_height = img.size
+    max_width = letter[0] - 2 * inch
+    max_height = letter[1] - 2 * inch
+    
+    scale = min(max_width / img_width, max_height / img_height)
+    pdf_img_width = img_width * scale
+    pdf_img_height = img_height * scale
+    
+    x = (letter[0] - pdf_img_width) / 2
+    y = (letter[1] - pdf_img_height) / 2
+    
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=letter)
+    
+    img_buffer = io.BytesIO()
+    img.save(img_buffer, format='PNG')
+    img_buffer.seek(0)
+    c.drawImage(ImageReader(img_buffer), x, y, width=pdf_img_width, height=pdf_img_height)
+    
+    c.save()
+    return buffer.getvalue()
+
+
+def is_image(content: bytes) -> bool:
+    if content[:2] == b'\xff\xd8': return True  # JPEG
+    if content[:8] == b'\x89PNG\r\n\x1a\n': return True  # PNG
+    if content[:6] in (b'GIF87a', b'GIF89a'): return True  # GIF
+    if content[:4] in (b'II*\x00', b'MM\x00*'): return True  # TIFF
+    if content[:2] == b'BM': return True  # BMP
+    return False
+
+
+def is_pdf(content: bytes) -> bool:
+    return content[:4] == b'%PDF'
+
+
+def certify_document(content, confidence_score, reviewer_id=None, client_reference=None, notes=None, add_visible_page=True):
+    if is_pdf(content):
+        return certify_pdf(content, confidence_score, reviewer_id, client_reference, notes, add_visible_page)
+    elif is_image(content):
+        pdf_content = image_to_pdf(content)
+        return certify_pdf(pdf_content, confidence_score, reviewer_id, client_reference, notes, add_visible_page)
+    else:
+        raise ValueError("Unsupported file type. Must be PDF or image.")
 
 
 
