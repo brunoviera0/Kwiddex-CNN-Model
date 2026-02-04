@@ -34,6 +34,19 @@ WEIGHT_DECAY = 1e-4
 MODEL_SAVE = f"best_authenticity_{dataset_name}.pt"
 DEVICE     = "cuda" if torch.cuda.is_available() else "cpu"
 
+def get_class_weights_from_loader(dataloader, num_classes):
+    counts = torch.zeros(num_classes, dtype=torch.long)
+
+    for _, labels in dataloader:
+        counts += torch.bincount(labels, minlength=num_classes)
+
+    counts = counts.float()
+
+    # Inverse frequency weighting
+    # Rarer class → bigger weight
+    weights = counts.sum() / (num_classes * counts)
+
+    return weights
 
 def train_one_epoch(model, dataloader, optimizer, criterion):
     model.train()
@@ -107,7 +120,12 @@ def main():
     model = build_model(len(classes)).to(DEVICE)
 
 
-    class_weights = torch.tensor([1.0, 5.0]).to(DEVICE)
+    # Automatically compute class weights from the train loader
+    class_weights = get_class_weights_from_loader(dtr, len(classes)).to(DEVICE)
+
+    print("Class order:", classes)
+    print("Auto class weights:", class_weights.tolist())
+
     criterion = nn.CrossEntropyLoss(weight=class_weights)
 
     best_acc = 0.0
