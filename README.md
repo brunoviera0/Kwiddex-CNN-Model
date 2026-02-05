@@ -2,12 +2,16 @@ IMPORTANT: Never commit the private key.
 Add private key to .gitignore:
 echo "keys/kwiddex_private.pem" >> .gitignore
 
-ENVIRONMENT VARIABLES
+ENVIRONMENT VARIABLES:
 
 KWX_BUCKET            GCS bucket name (kwiddex-datasets)
+
 KWX_DATA_BASE         Local cache directory (data/full_dataset)
+
 KWX_DATASET           Dataset name/folder in bucket
+
 PREV_BACKBONE_PATH    Previous model for cnn_part1.py
+
 DOC_BACKBONE_PATH     Document backbone for cnn_part2.py
 
 
