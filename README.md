@@ -2,7 +2,9 @@ IMPORTANT: Never commit the private key.
 Add private key to .gitignore:
 echo "keys/kwiddex_private.pem" >> .gitignore
 
-ENVIRONMENT VARIABLES
+
+
+ENVIRONMENT VARIABLES:
 
 KWX_BUCKET            GCS bucket name (kwiddex-datasets)
 
@@ -13,6 +15,9 @@ KWX_DATASET           Dataset name/folder in bucket
 PREV_BACKBONE_PATH    Previous model for cnn_part1.py
 
 DOC_BACKBONE_PATH     Document backbone for cnn_part2.py
+
+
+
 
 
 
@@ -46,9 +51,12 @@ STEPS TO RUN CODE
 		python3 register_dataset.py
 
 Code will ask for "user/datasetname" from the Kaggle URL
-  Example: if Kaggle URL is kaggle.com/datasets/uconn/fake-documents
-  then enter: uconn/fake-documents
-  Uploads the dataset ZIP to GCS and prints the URL
+ 
+Example: if Kaggle URL is kaggle.com/datasets/uconn/fake-documents
+
+then enter: uconn/fake-documents
+
+Uploads the dataset ZIP to GCS and prints the URL
 
 7. Run the dataset pipeline
 
