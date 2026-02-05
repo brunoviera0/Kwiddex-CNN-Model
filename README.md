@@ -213,6 +213,8 @@ GET  /health         Health check
 
 GET  /document/{id}  Get previous prediction result
 
+*** in progress ***
+
 POST /certify          Certify a verified document
 
 POST /verify-certificate   Verify a certified PDF
