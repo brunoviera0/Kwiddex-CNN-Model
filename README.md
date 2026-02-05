@@ -1,10 +1,15 @@
-This project classifies documents as "real" or "fake" using a fine-tuned CNN.
-It includes pipelines for dataset processing, model training, evaluation, and
-a REST API for inference.
-
 IMPORTANT: Never commit the private key.
 Add private key to .gitignore:
 echo "keys/kwiddex_private.pem" >> .gitignore
+
+ENVIRONMENT VARIABLES
+
+KWX_BUCKET            GCS bucket name (kwiddex-datasets)
+KWX_DATA_BASE         Local cache directory (data/full_dataset)
+KWX_DATASET           Dataset name/folder in bucket
+PREV_BACKBONE_PATH    Previous model for cnn_part1.py
+DOC_BACKBONE_PATH     Document backbone for cnn_part2.py
+
 
 
 
@@ -122,7 +127,67 @@ Prints classification report (precision, recall, F1)
 Prints confusion matrix
 
 
-11. Run the inference API
+
+11. Document Certification
+
+Setup (one time only):
+
+	python3 certification.py setup
+
+	Creates keys/kwiddex_private.pem (Secret)
+	Creates keys/kwiddex_public.pem (safe to share)
+
+Test the system:
+
+	python3 certification.py test
+
+Certify a document/image:
+
+	python3 certification.py certify input.pdf output_certified.pdf
+	python3 certification.py certify input.jpg output_certified.pdf
+
+Verify a certified document:
+
+	python3 certification.py verify certified.pdf
+
+How it works:
+
+SHA-256 hash of document creates unique fingerprint
+
+Certificate contains hash, confidence score, timestamp, human ID
+
+RSA private key signs the certificate
+
+Certificate embedded in PDF metadata
+
+Can verify using the public key
+
+
+12. User Creation
+
+Create a user:
+
+	python3 auth.py create username password
+
+Login:
+
+	python3 auth.py login username password
+
+List users:
+
+	python3 auth.py list
+
+What is stored:
+
+User ID
+
+Username
+
+Password hash (SHA-256)
+
+
+
+13. Run the inference API
 
 		python3 predict.py
 
@@ -136,9 +201,40 @@ GET  /health         Health check
 
 GET  /document/{id}  Get previous prediction result
 
+POST /certify          Certify a verified document
+
+POST /verify-certificate   Verify a certified PDF
+
+GET  /certificate/{id}     Look up certificate using ID
+
+
 Test with curl: 
 
 	curl -X POST "http://localhost:8000/predict" 
 	-F "file=@test_document.jpg"
 
 Results are stored in google cloud datastore table
+
+
+
+14. Demo
+
+Run the pipeline demo:
+
+	python3 demo_pipeline.py
+
+Shows:
+
+1. User account creation
+
+2. User login
+
+3. Document upload and model scoring
+
+4. Document certification with digital signature
+
+5. Certificate verification
+
+6. Image certification
+
+7. Certificate revocation
