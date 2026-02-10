@@ -32,7 +32,7 @@ def save_users(users: dict) -> None:
 
 
 
-def create_user(username: str, password: str) -> Tuple[bool, str]:
+def create_user(username: str, password: str, organization: str = None, verification_link: str = None) -> Tuple[bool, str]:
     users = load_users()
     
     if username in users:
@@ -54,7 +54,9 @@ def create_user(username: str, password: str) -> Tuple[bool, str]:
         "password_hash": password_hash,
         "salt": salt,
         "created_at": datetime.utcnow().isoformat() + "Z",
-        "active": True
+        "active": True,
+        "organization": organization,         
+        "verification_link": verification_link 
     }
     
     save_users(users)
@@ -85,6 +87,30 @@ def get_user_id(username: str) -> Optional[str]:
     users = load_users()
     if username in users:
         return users[username]["user_id"]
+    return None
+
+
+def get_user_profile(username: str) -> Optional[dict]: #org link or org name
+    users = _load_users()
+    if username not in users:
+        return None
+    user = users[username]
+    return {
+        "user_id": user["user_id"],
+        "organization": user.get("organization"),
+        "verification_link": user.get("verification_link")
+    }
+
+
+def get_profile_by_id(user_id: str) -> Optional[dict]: #get optional public profile using ID
+    users = _load_users()
+    for username, data in users.items():
+        if data["user_id"] == user_id:
+            return {
+                "user_id": user_id,
+                "organization": data.get("organization"),
+                "verification_link": data.get("verification_link")
+            }
     return None
 
 
@@ -123,10 +149,11 @@ if __name__ == "__main__":
     if command == "create" and len(sys.argv) >= 4:
         username = sys.argv[2]
         password = sys.argv[3]
-        success, result = create_user(username, password)
+        org = sys.argv[4] if len(sys.argv) > 4 else None
+        link = sys.argv[5] if len(sys.argv) > 5 else None
+        success, result = create_user(username, password, org, link)
         if success:
-            print(f"User created successfully")
-            print(f"User ID: {result}")
+            print(f"User created. ID: {result}")
         else:
             print(f"Error: {result}")
     

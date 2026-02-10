@@ -12,6 +12,11 @@ from datetime import datetime
 import numpy as np
 import uuid
 import imgaug.augmenters as iaa
+from typing import Optional
+from auth import create_user, authenticate, get_user_id, get_profile_by_id
+from certification import certify_document, verify_pdf, certify_pdf, is_certified
+from fastapi.responses import Response
+from pathlib import Path
 
 app = FastAPI()
 
@@ -85,6 +90,81 @@ class MonteCarloResponse(BaseModel):
     result_id: str
     document_id: str
     gcs_path: str
+
+
+class CertificationRequest(BaseModel):
+    reviewer_id: Optional[str] = None
+    client_reference: Optional[str] = None
+    notes: Optional[str] = None
+    add_visible_page: bool = True  #whether to add certificate page to PDF
+
+class CertificationResponse(BaseModel):
+    success: bool
+    certificate_id: str
+    issued_at: str
+    document_hash: str
+    confidence_score: float
+    message: str
+
+class VerificationResponse(BaseModel):
+    valid: bool
+    has_certificate: bool
+    signature_valid: Optional[bool] = None
+    document_intact: Optional[bool] = None
+    certificate_active: Optional[bool] = None
+    message: str
+    certificate_id: Optional[str] = None
+    issued_at: Optional[str] = None
+    confidence_score: Optional[float] = None
+
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+    organization: Optional[str] = None
+    verification_link: Optional[str] = None
+
+class RegisterResponse(BaseModel):
+    success: bool
+    user_id: Optional[str] = None
+    message: str
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class LoginResponse(BaseModel):
+    success: bool
+    user_id: Optional[str] = None
+    message: str
+
+
+#certification models
+class VerificationResponse(BaseModel):
+    valid: bool
+    has_certificate: bool
+    signature_valid: Optional[bool] = None
+    certificate_active: Optional[bool] = None
+    message: str
+    certificate_id: Optional[str] = None
+    reviewer_id: Optional[str] = None
+    organization: Optional[str] = None
+    verification_link: Optional[str] = None
+
+class CertificateLookupResponse(BaseModel):
+    found: bool
+    certificate_id: Optional[str] = None
+    confidence_score: Optional[float] = None
+    reviewer_id: Optional[str] = None
+    organization: Optional[str] = None
+    verification_link: Optional[str] = None
+    status: Optional[str] = None
+    message: str
+
+class RevokeResponse(BaseModel):
+    success: bool
+    certificate_id: str
+    message: str
+
 
 
 
@@ -334,11 +414,6 @@ async def predict_monte_carlo(file: UploadFile = File(...), num_samples: int = 3
 
 
 
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy", "model_loaded": model is not None}
-
-
 
 @app.get("/document/{document_id}")
 async def get_document_result(document_id: str):
@@ -366,6 +441,279 @@ async def get_document_result(document_id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving document: {str(e)}")
+
+
+
+
+
+
+@app.post("/certify", response_model=CertificationResponse)
+async def certify_document_endpoint(
+    file: UploadFile = File(...),
+    reviewer_id: Optional[str] = None,
+    client_reference: Optional[str] = None,
+    notes: Optional[str] = None,
+    add_visible_page: bool = True
+):
+    """
+    Use this AFTER human review has approved the document.
+    
+    Parameters:
+    - file: PDF document to certify
+    - reviewer_id: Email or ID of the human reviewer who approved
+    - client_reference: Client's case number or reference
+    - notes: Any additional notes to include
+    - add_visible_page: If true, appends a human-readable certificate page
+    
+    Returns certified PDF as downloadable file.
+    """
+    try:
+        #read the uploaded file
+        content = await file.read()
+        
+        #verify file is a pdf
+        if not file.content_type == "application/pdf":
+            raise HTTPException(
+                status_code=400, 
+                detail="Certification only supports PDF files. Convert your document to PDF first."
+            )
+        
+        #run through CNN model to get confidence score
+        #convert PDF to image for model
+        images = pdf2image.convert_from_bytes(content)
+        image = images[0]  #first page
+        processed_image = preprocess_image(image)
+        
+        with torch.no_grad():
+            outputs = model(processed_image)
+            probabilities = torch.nn.functional.softmax(outputs, dim=1)
+            probabilities_np = probabilities.cpu().numpy()[0]
+        
+        predicted_class = int(np.argmax(probabilities_np))
+        confidence = float(np.max(probabilities_np))
+        
+        #check if document is classified as "real" with sufficient confidence
+        MIN_CONFIDENCE_FOR_CERTIFICATION = 0.70 #min confidence for certification can be adjusted
+        
+        if predicted_class != 1:  # 1 = real, 0 = fake
+            raise HTTPException(
+                status_code=400,
+                detail=f"Document classified as FAKE (confidence: {confidence:.1%}). Cannot certify."
+            )
+        
+        if confidence < MIN_CONFIDENCE_FOR_CERTIFICATION:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Confidence too low for certification ({confidence:.1%}). Minimum required: {MIN_CONFIDENCE_FOR_CERTIFICATION:.1%}"
+            )
+        
+        #create certification
+        certified_pdf, certificate = certify_pdf(
+            pdf_content=content,
+            confidence_score=confidence,
+            reviewer_id=reviewer_id,
+            client_reference=client_reference,
+            notes=notes,
+            add_visible_page=add_visible_page
+        )
+        
+        #store certification record in Datastore for our records
+        cert_key = datastore_client.key("Certification")
+        cert_entity = datastore.Entity(key=cert_key)
+        cert_entity.update({
+            "certificate_id": certificate["certificate_id"],
+            "document_hash": certificate["document_hash"],
+            "issued_at": datetime.utcnow(),
+            "confidence_score": confidence,
+            "reviewer_id": reviewer_id,
+            "client_reference": client_reference,
+            "original_filename": file.filename,
+            "status": "active"
+        })
+        datastore_client.put(cert_entity)
+        
+        
+        #filename for certified document
+        original_name = file.filename.rsplit('.', 1)[0] if '.' in file.filename else file.filename
+        certified_filename = f"{original_name}_certified.pdf"
+        
+        return Response(
+            content=certified_pdf,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="{certified_filename}"',
+                "X-Certificate-ID": certificate["certificate_id"],
+                "X-Confidence-Score": str(confidence)
+            }
+        )
+       
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Certification error: {str(e)}")
+
+
+
+
+
+@app.post("/verify-certificate", response_model=VerificationResponse)
+async def verify_certificate_endpoint(file: UploadFile = File(...)):
+    try:
+        content = await file.read()
+        
+        #check if it's a PDF
+        if not file.content_type == "application/pdf":
+            return VerificationResponse(
+                valid=False,
+                has_certificate=False,
+                message="Only PDF files can contain Kwiddex certificates."
+            )
+        
+        #run verification
+        result = verify_pdf(content)
+        
+        #build response
+        response = VerificationResponse(
+            valid=result["valid"],
+            has_certificate=result["has_certificate"],
+            signature_valid=result.get("signature_valid"),
+            document_intact=result.get("document_intact"),
+            certificate_active=result.get("certificate_active"),
+            message=result["message"]
+        )
+        
+        #add certificate details if present
+        if result.get("certificate"):
+            cert = result["certificate"]
+            response.certificate_id = cert.get("certificate_id")
+            response.issued_at = cert.get("issued_at")
+            response.confidence_score = cert.get("authenticity_confidence")
+        
+        return response
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Verification error: {str(e)}")
+
+
+
+
+
+@app.get("/certificate/{certificate_id}")
+async def get_certificate_details(certificate_id: str): #look up certificate using ID
+    try:
+        #query Datastore for the certificate
+        query = datastore_client.query(kind="Certification")
+        query.add_filter("certificate_id", "=", certificate_id)
+        results = list(query.fetch(limit=1))
+        
+        if not results:
+            raise HTTPException(status_code=404, detail="Certificate not found")
+        
+        cert = results[0]
+        
+        return {
+            "certificate_id": cert.get("certificate_id"),
+            "issued_at": cert.get("issued_at").isoformat() if cert.get("issued_at") else None,
+            "confidence_score": cert.get("confidence_score"),
+            "reviewer_id": cert.get("reviewer_id"),
+            "client_reference": cert.get("client_reference"),
+            "status": cert.get("status"),
+            "original_filename": cert.get("original_filename")
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lookup error: {str(e)}")
+
+
+
+
+
+@app.post("/revoke-certificate/{certificate_id}")
+async def revoke_certificate(certificate_id: str, reason: Optional[str] = None):
+    
+    #Once revoked, the certificate will fail verification even if the
+    #signature is technically valid. Useful if a certification was
+    #issued in error or if fraud is later discovered.
+    try:
+        #find the certificate in Datastore
+        query = datastore_client.query(kind="Certification")
+        query.add_filter("certificate_id", "=", certificate_id)
+        results = list(query.fetch(limit=1))
+        
+        if not results:
+            raise HTTPException(status_code=404, detail="Certificate not found")
+        
+        cert_entity = results[0]
+        
+        #check if already revoked
+        if cert_entity.get("status") == "revoked":
+            return {
+                "message": "Certificate was already revoked",
+                "certificate_id": certificate_id,
+                "revoked_at": cert_entity.get("revoked_at").isoformat() if cert_entity.get("revoked_at") else None
+            }
+        
+        #update status to revoked
+        cert_entity["status"] = "revoked"
+        cert_entity["revoked_at"] = datetime.utcnow()
+        cert_entity["revocation_reason"] = reason
+        
+        datastore_client.put(cert_entity)
+        
+        return {
+            "message": "Certificate revoked successfully",
+            "certificate_id": certificate_id,
+            "revoked_at": cert_entity["revoked_at"].isoformat(),
+            "reason": reason
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Revocation error: {str(e)}")
+
+
+
+
+@app.post("/register", response_model=RegisterResponse)
+async def register_user(request: RegisterRequest):
+    success, result = create_user(
+        request.username, 
+        request.password,
+        request.organization,
+        request.verification_link
+    )
+    return RegisterResponse(
+        success=success,
+        user_id=result if success else None,
+        message="User registered" if success else result
+    )
+
+
+
+
+@app.post("/login", response_model=LoginResponse)
+async def login_user(request: LoginRequest):
+    success, user_id = authenticate(request.username, request.password)
+    return LoginResponse(
+        success=success,
+        user_id=user_id,
+        message="Login successful" if success else "Invalid credentials"
+    )
+
+
+
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "healthy",
+        "model_loaded": model is not None,
+        "certification_ready": Path("keys/kwiddex_private.pem").exists()
+    }
+
+
 
 
 if __name__ == "__main__":
