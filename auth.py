@@ -91,7 +91,7 @@ def get_user_id(username: str) -> Optional[str]:
 
 
 def get_user_profile(username: str) -> Optional[dict]: #org link or org name
-    users = _load_users()
+    users = load_users()
     if username not in users:
         return None
     user = users[username]
@@ -103,7 +103,7 @@ def get_user_profile(username: str) -> Optional[dict]: #org link or org name
 
 
 def get_profile_by_id(user_id: str) -> Optional[dict]: #get optional public profile using ID
-    users = _load_users()
+    users = load_users()
     for username, data in users.items():
         if data["user_id"] == user_id:
             return {
