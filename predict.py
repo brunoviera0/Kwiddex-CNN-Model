@@ -15,6 +15,7 @@ import imgaug.augmenters as iaa
 from typing import Optional
 from auth import create_user, authenticate, get_user_id, get_profile_by_id
 from certification import certify_document, verify_pdf, certify_pdf, is_certified
+import certificate_store
 from fastapi.responses import Response
 from pathlib import Path
 
@@ -106,17 +107,6 @@ class CertificationResponse(BaseModel):
     confidence_score: float
     message: str
 
-class VerificationResponse(BaseModel):
-    valid: bool
-    has_certificate: bool
-    signature_valid: Optional[bool] = None
-    document_intact: Optional[bool] = None
-    certificate_active: Optional[bool] = None
-    message: str
-    certificate_id: Optional[str] = None
-    issued_at: Optional[str] = None
-    confidence_score: Optional[float] = None
-
 class RegisterRequest(BaseModel):
     username: str
     password: str
@@ -143,9 +133,12 @@ class VerificationResponse(BaseModel):
     valid: bool
     has_certificate: bool
     signature_valid: Optional[bool] = None
+    document_intact: Optional[bool] = None
     certificate_active: Optional[bool] = None
     message: str
     certificate_id: Optional[str] = None
+    issued_at: Optional[str] = None
+    confidence_score: Optional[float] = None
     reviewer_id: Optional[str] = None
     organization: Optional[str] = None
     verification_link: Optional[str] = None
@@ -302,8 +295,6 @@ def monte_carlo_inference(image: Image.Image, num_samples: int = 30) -> dict:
     }
 
 
-
-
 @app.post("/predict", response_model=PredictionResponse)
 async def predict(file: UploadFile = File(...)):
     try:
@@ -447,7 +438,7 @@ async def get_document_result(document_id: str):
 
 
 
-@app.post("/certify", response_model=CertificationResponse)
+@app.post("/certify")
 async def certify_document_endpoint(
     file: UploadFile = File(...),
     reviewer_id: Optional[str] = None,
@@ -459,7 +450,7 @@ async def certify_document_endpoint(
     Use this AFTER human review has approved the document.
     
     Parameters:
-    - file: PDF document to certify
+    - file: PDF or image (JPEG, PNG) to certify. Images are auto-converted to PDF.
     - reviewer_id: Email or ID of the human reviewer who approved
     - client_reference: Client's case number or reference
     - notes: Any additional notes to include
@@ -471,17 +462,24 @@ async def certify_document_endpoint(
         #read the uploaded file
         content = await file.read()
         
-        #verify file is a pdf
-        if not file.content_type == "application/pdf":
+        if not content:
+            raise HTTPException(status_code=400, detail="Empty file uploaded.")
+        
+        #determine file type and get image for model scoring
+        SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/tiff", "image/bmp"}
+        
+        if file.content_type == "application/pdf":
+            images = pdf2image.convert_from_bytes(content)
+            image = images[0]
+        elif file.content_type in SUPPORTED_IMAGE_TYPES:
+            image = Image.open(io.BytesIO(content)).convert("RGB")
+        else:
             raise HTTPException(
-                status_code=400, 
-                detail="Certification only supports PDF files. Convert your document to PDF first."
+                status_code=400,
+                detail=f"Unsupported file type: {file.content_type}. Must be PDF or image (JPEG, PNG, GIF, TIFF, BMP)."
             )
         
         #run through CNN model to get confidence score
-        #convert PDF to image for model
-        images = pdf2image.convert_from_bytes(content)
-        image = images[0]  #first page
         processed_image = preprocess_image(image)
         
         with torch.no_grad():
@@ -507,9 +505,9 @@ async def certify_document_endpoint(
                 detail=f"Confidence too low for certification ({confidence:.1%}). Minimum required: {MIN_CONFIDENCE_FOR_CERTIFICATION:.1%}"
             )
         
-        #create certification
-        certified_pdf, certificate = certify_pdf(
-            pdf_content=content,
+        #create certification (certify_document handles both PDF and image input)
+        certified_pdf, certificate = certify_document(
+            content=content,
             confidence_score=confidence,
             reviewer_id=reviewer_id,
             client_reference=client_reference,
@@ -517,20 +515,16 @@ async def certify_document_endpoint(
             add_visible_page=add_visible_page
         )
         
-        #store certification record in Datastore for our records
-        cert_key = datastore_client.key("Certification")
-        cert_entity = datastore.Entity(key=cert_key)
-        cert_entity.update({
-            "certificate_id": certificate["certificate_id"],
-            "document_hash": certificate["document_hash"],
-            "issued_at": datetime.utcnow(),
-            "confidence_score": confidence,
-            "reviewer_id": reviewer_id,
-            "client_reference": client_reference,
-            "original_filename": file.filename,
-            "status": "active"
-        })
-        datastore_client.put(cert_entity)
+        #store certification record in Datastore
+        certificate_store.store_certificate(
+            certificate_id=certificate["certificate_id"],
+            document_hash=certificate["document_hash"],
+            confidence_score=confidence,
+            reviewer_id=reviewer_id,
+            client_reference=client_reference,
+            original_filename=file.filename,
+            notes=notes
+        )
         
         
         #filename for certified document
@@ -569,8 +563,22 @@ async def verify_certificate_endpoint(file: UploadFile = File(...)):
                 message="Only PDF files can contain Kwiddex certificates."
             )
         
-        #run verification
+        #run cryptographic verification (signature check)
         result = verify_pdf(content)
+        
+        #if certificate exists and signature is valid, also check Datastore for revocation
+        if result.get("has_certificate") and result.get("signature_valid"):
+            cert = result.get("certificate", {})
+            cert_id = cert.get("certificate_id")
+            if cert_id:
+                try:
+                    status = certificate_store.check_revocation_status(cert_id)
+                    if status == "revoked":
+                        result["valid"] = False
+                        result["certificate_active"] = False
+                        result["message"] = "Certificate has been revoked."
+                except Exception:
+                    pass  #if Datastore is unreachable, fall back to embedded status
         
         #build response
         response = VerificationResponse(
@@ -601,25 +609,14 @@ async def verify_certificate_endpoint(file: UploadFile = File(...)):
 @app.get("/certificate/{certificate_id}")
 async def get_certificate_details(certificate_id: str): #look up certificate using ID
     try:
-        #query Datastore for the certificate
-        query = datastore_client.query(kind="Certification")
-        query.add_filter("certificate_id", "=", certificate_id)
-        results = list(query.fetch(limit=1))
+        record = certificate_store.lookup_certificate(certificate_id)
         
-        if not results:
+        if not record:
             raise HTTPException(status_code=404, detail="Certificate not found")
         
-        cert = results[0]
-        
-        return {
-            "certificate_id": cert.get("certificate_id"),
-            "issued_at": cert.get("issued_at").isoformat() if cert.get("issued_at") else None,
-            "confidence_score": cert.get("confidence_score"),
-            "reviewer_id": cert.get("reviewer_id"),
-            "client_reference": cert.get("client_reference"),
-            "status": cert.get("status"),
-            "original_filename": cert.get("original_filename")
-        }
+        #remove internal _entity field
+        record.pop("_entity", None)
+        return record
         
     except HTTPException:
         raise
@@ -628,46 +625,21 @@ async def get_certificate_details(certificate_id: str): #look up certificate usi
 
 
 
-
-
 @app.post("/revoke-certificate/{certificate_id}")
-async def revoke_certificate(certificate_id: str, reason: Optional[str] = None):
+async def revoke_certificate_endpoint(certificate_id: str, reason: Optional[str] = None):
     
     #Once revoked, the certificate will fail verification even if the
     #signature is technically valid. Useful if a certification was
     #issued in error or if fraud is later discovered.
     try:
-        #find the certificate in Datastore
-        query = datastore_client.query(kind="Certification")
-        query.add_filter("certificate_id", "=", certificate_id)
-        results = list(query.fetch(limit=1))
+        result = certificate_store.revoke_certificate(certificate_id, reason)
         
-        if not results:
-            raise HTTPException(status_code=404, detail="Certificate not found")
+        if not result["success"]:
+            if "not found" in result["message"].lower():
+                raise HTTPException(status_code=404, detail="Certificate not found")
+            return result
         
-        cert_entity = results[0]
-        
-        #check if already revoked
-        if cert_entity.get("status") == "revoked":
-            return {
-                "message": "Certificate was already revoked",
-                "certificate_id": certificate_id,
-                "revoked_at": cert_entity.get("revoked_at").isoformat() if cert_entity.get("revoked_at") else None
-            }
-        
-        #update status to revoked
-        cert_entity["status"] = "revoked"
-        cert_entity["revoked_at"] = datetime.utcnow()
-        cert_entity["revocation_reason"] = reason
-        
-        datastore_client.put(cert_entity)
-        
-        return {
-            "message": "Certificate revoked successfully",
-            "certificate_id": certificate_id,
-            "revoked_at": cert_entity["revoked_at"].isoformat(),
-            "reason": reason
-        }
+        return result
         
     except HTTPException:
         raise

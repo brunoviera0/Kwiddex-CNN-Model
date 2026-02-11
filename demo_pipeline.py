@@ -13,6 +13,7 @@ import numpy as np
 from auth import create_user, authenticate
 import pdf2image
 from certification import certify_document, verify_pdf, PRIVATE_KEY_PATH, setup_keys
+import certificate_store
 
 MODEL_PATH = "best_real_fake_resnet18.pt"
 
@@ -215,6 +216,22 @@ def run_demo():
     print(f"  Document hash: {certificate['document_hash'][:16]}...")
     print(f"  Reviewer ID embedded: {certificate['reviewer_id']}")
     
+    #store certificate in Datastore
+    print(f"\n  Storing certificate in Datastore...")
+    try:
+        entity_id = certificate_store.store_certificate(
+            certificate_id=certificate["certificate_id"],
+            document_hash=certificate["document_hash"],
+            confidence_score=confidence_score,
+            reviewer_id=logged_in_user_id,
+            client_reference="DEMO-2026-001",
+            original_filename="demo_document.pdf",
+            notes="Demo certification"
+        )
+        print(f"  Stored in Datastore (entity ID: {entity_id})")
+    except Exception as e:
+        print(f"  WARNING: Could not store in Datastore: {e}")
+        print(f"  (This is expected if running without GCP credentials)")
     
     
     #save certified document
@@ -242,6 +259,20 @@ def run_demo():
     if result['valid']:
         print(f"\n  This document is verified as certified by Kwiddex!")
         print(f"  It has not been modified since certification.")
+    
+    #look up certificate from Datastore
+    print(f"\n  Looking up certificate in Datastore...")
+    try:
+        db_record = certificate_store.lookup_certificate(certificate['certificate_id'])
+        if db_record:
+            print(f"    Found in Datastore!")
+            print(f"    Status: {db_record['status']}")
+            print(f"    Stored at: {db_record['issued_at']}")
+            print(f"    Reviewer: {db_record['reviewer_id']}")
+        else:
+            print(f"    Not found in Datastore (offline mode)")
+    except Exception as e:
+        print(f"    Could not query Datastore: {e}")
     
     wait()
     
@@ -272,6 +303,20 @@ def run_demo():
     print(f"\n  Image certified")
     print(f"  Certificate ID: {image_cert['certificate_id']}")
     
+    #store image certificate in Datastore
+    try:
+        certificate_store.store_certificate(
+            certificate_id=image_cert["certificate_id"],
+            document_hash=image_cert["document_hash"],
+            confidence_score=image_confidence,
+            reviewer_id=logged_in_user_id,
+            client_reference="DEMO-IMG-001",
+            original_filename="demo_image.jpg"
+        )
+        print(f"  Stored in Datastore")
+    except Exception as e:
+        print(f"  WARNING: Could not store in Datastore: {e}")
+    
     #verify
     result = verify_pdf(certified_image_pdf)
     print(f"  Verification: {'VALID' if result['valid'] else 'INVALID'}")
@@ -282,19 +327,35 @@ def run_demo():
 
     print_step(7, "Certificate Revocation")
     
-    print("Simulating certificate revocation...")
+    print("Revoking certificate in Datastore...")
     print(f"  Certificate ID: {certificate['certificate_id']}")
-    print(f"\n  (In production, this would update the database to mark")
-    print(f"   the certificate as revoked. The cryptographic signature")
-    print(f"   would still be valid, but the status check would fail.)")
     
-    #simulate revocation by modifying the certificate
-    certificate['status'] = 'revoked'
-    
-    print(f"\n  Certificate status changed to: REVOKED")
-    print(f"\n  Note: The document itself is unchanged. Only the certificate")
-    print(f"        status in our database is updated. Future verification")
-    print(f"        checks will show the certificate has been revoked.")
+    try:
+        revoke_result = certificate_store.revoke_certificate(
+            certificate['certificate_id'],
+            reason="Demo revocation test"
+        )
+        
+        if revoke_result["success"]:
+            print(f"\n  Certificate revoked!")
+            print(f"  Revoked at: {revoke_result['revoked_at']}")
+            print(f"  Reason: {revoke_result['reason']}")
+        else:
+            print(f"\n  Revocation result: {revoke_result['message']}")
+        
+        #confirm revocation by looking it up
+        print(f"\n  Confirming revocation status...")
+        status = certificate_store.check_revocation_status(certificate['certificate_id'])
+        print(f"  Datastore status: {status}")
+        
+        #reverify the same certified PDF, should now fail if API checks Datastore
+        print(f"\n  Note: The PDF's embedded signature is still cryptographically valid.")
+        print(f"  However, the /verify-certificate API endpoint now checks Datastore")
+        print(f"  and will report this certificate as revoked.")
+        
+    except Exception as e:
+        print(f"\n  Could not revoke in Datastore: {e}")
+        print(f"  (This is expected if running without GCP credentials)")
     
     wait()
     

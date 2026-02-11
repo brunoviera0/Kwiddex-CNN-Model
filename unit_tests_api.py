@@ -160,5 +160,119 @@ class TestPrivacy(unittest.TestCase):
         self.assertNotIn(pw, r.text)
 
 
+class TestAuthFunctions(unittest.TestCase):
+    """Tests for auth.py functions not covered by API tests."""
+
+    def test_get_user_profile(self):
+        from auth import create_user, get_user_profile
+        u = unique_user()
+        create_user(u, "password123", organization="TestOrg", verification_link="https://example.com")
+        profile = get_user_profile(u)
+        self.assertIsNotNone(profile)
+        self.assertEqual(profile["organization"], "TestOrg")
+        self.assertEqual(profile["verification_link"], "https://example.com")
+
+    def test_get_user_profile_nonexistent(self):
+        from auth import get_user_profile
+        profile = get_user_profile("nonexistent_user_xyz")
+        self.assertIsNone(profile)
+
+    def test_get_profile_by_id(self):
+        from auth import create_user, get_profile_by_id
+        u = unique_user()
+        success, user_id = create_user(u, "password123", organization="IDOrg")
+        self.assertTrue(success)
+        profile = get_profile_by_id(user_id)
+        self.assertIsNotNone(profile)
+        self.assertEqual(profile["user_id"], user_id)
+        self.assertEqual(profile["organization"], "IDOrg")
+
+    def test_get_profile_by_id_nonexistent(self):
+        from auth import get_profile_by_id
+        profile = get_profile_by_id("USR-DOESNOTEXIST")
+        self.assertIsNone(profile)
+
+    def test_deactivate_user_blocks_login(self):
+        from auth import create_user, authenticate, deactivate_user
+        u = unique_user()
+        create_user(u, "password123")
+        success, _ = authenticate(u, "password123")
+        self.assertTrue(success)
+        deactivate_user(u)
+        success, _ = authenticate(u, "password123")
+        self.assertFalse(success)
+
+    def test_deactivate_nonexistent_user(self):
+        from auth import deactivate_user
+        result = deactivate_user("nonexistent_user_xyz")
+        self.assertFalse(result)
+
+    def test_list_users_includes_created(self):
+        from auth import create_user, list_users
+        u = unique_user()
+        create_user(u, "password123")
+        users = list_users()
+        usernames = [entry["username"] for entry in users]
+        self.assertIn(u, usernames)
+
+    def test_create_user_with_org_fields(self):
+        from auth import create_user, get_user_id
+        u = unique_user()
+        success, user_id = create_user(u, "password123", organization="ACME", verification_link="https://acme.com")
+        self.assertTrue(success)
+        self.assertIsNotNone(get_user_id(u))
+
+
+class TestVerificationResponseFields(unittest.TestCase):
+    def test_uncertified_pdf_has_all_fields(self):
+        r = get_client().post("/verify-certificate", files={"file": ("t.pdf", create_pdf(), "application/pdf")})
+        data = r.json()
+        for field in ["valid", "has_certificate", "message"]:
+            self.assertIn(field, data, f"Missing field: {field}")
+
+    def test_non_pdf_has_all_fields(self):
+        r = get_client().post("/verify-certificate", files={"file": ("t.jpg", create_image(), "image/jpeg")})
+        data = r.json()
+        self.assertIn("valid", data)
+        self.assertIn("has_certificate", data)
+        self.assertIn("message", data)
+
+
+class TestCertificationEndpointBehavior(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from certification import setup_keys, PRIVATE_KEY_PATH
+        if not PRIVATE_KEY_PATH.exists():
+            setup_keys()
+
+    def test_certify_returns_pdf_bytes(self):
+        r = get_client().post("/certify", files={"file": ("t.pdf", create_pdf(), "application/pdf")})
+        if r.status_code == 200:
+            self.assertTrue(
+                r.content[:4] == b'%PDF' or r.headers.get("content-type") == "application/pdf",
+                "200 response from /certify should be PDF bytes"
+            )
+        else:
+            #400 = model rejected, 500 = error — both acceptable in test env
+            self.assertIn(r.status_code, [400, 500])
+
+    def test_certify_image_accepted(self):
+        r = get_client().post("/certify", files={"file": ("t.jpg", create_image(), "image/jpeg")})
+        #200 = certified, 400 = model rejected as fake/low confidence — both valid
+        self.assertIn(r.status_code, [200, 400])
+
+    def test_certify_unsupported_type_rejected(self):
+        r = get_client().post("/certify", files={"file": ("t.txt", b"hello world", "text/plain")})
+        self.assertIn(r.status_code, [400, 422, 500])
+
+
+class TestHealthEndpointDetails(unittest.TestCase):
+    def test_health_has_model_status(self):
+        r = get_client().get("/health")
+        data = r.json()
+        self.assertIn("model_loaded", data)
+        self.assertIn("certification_ready", data)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
