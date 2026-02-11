@@ -257,11 +257,12 @@ Shows:
 2/11/26
 
 This week:
+
 -User registration and login endpoints (/register and /login) to the FastAPI application, backed by a local authentication module (auth.py) that handles account creation, password hashing, user lookup, and account deactivation. 
 
 -/certify endpoint was fixed to accept both PDF and image uploads, matching the behavior of the underlying certification module which auto-converts images to PDF before signing.
 
--certificate_store.py stores, retrieves, and revokes certificates in Google Cloud Datastore.The 
+-certificate_store.py was created to store, retrieve, and revoke certificates using Google Cloud Datastore.
 
 -/verify-certificate endpoint was updated to check Datastore for revocation status, so revoking a certificate now actually blocks future verification.
 
