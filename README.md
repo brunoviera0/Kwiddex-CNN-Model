@@ -252,3 +252,41 @@ Shows:
 6. Image certification
 
 7. Certificate revocation
+
+
+2/11/26
+
+This week:
+-User registration and login endpoints (/register and /login) to the FastAPI application, backed by a local authentication module (auth.py) that handles account creation, password hashing, user lookup, and account deactivation. 
+
+-/certify endpoint was fixed to accept both PDF and image uploads, matching the behavior of the underlying certification module which auto-converts images to PDF before signing.
+
+-certificate_store.py stores, retrieves, and revokes certificates in Google Cloud Datastore.The 
+
+-/verify-certificate endpoint was updated to check Datastore for revocation status, so revoking a certificate now actually blocks future verification.
+
+-demo_pipeline.py was updated to store and retrieve certificates through Datastore instead of simulating operations locally. 
+
+-38 unit tests, covering authentication functions (profile lookup, account deactivation, organization fields), certification behavior (image acceptance, unsupported type rejection, PDF byte responses), verification response completeness, and health endpoint validation.
+
+To run the tests:
+    
+	python3 -m unittest unit_tests_api.py -v
+
+To run the API:
+    
+	python3 -m uvicorn predict:app --host 0.0.0.0 --port 8000
+
+To run the demo pipeline:
+    
+	python3 demo_pipeline.py
+
+Next week:
+
+-Upgrade password hashing from SHA-256 to bcrypt or argon2 to prevent brute-force attacks.
+
+-Secure the /certify, /revoke-certificate, and /certificate lookup endpoints behind token-based authentication so that only logged-in users can certify or revoke documents. 
+
+-Add rate limiting to the /register and /login endpoints using slowapi to prevent credential stuffing.
+
+-Update API to handle model loading failures at startup instead of crashing.
