@@ -156,7 +156,7 @@ def main():
     args = parser.parse_args()
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        archive_path = os.path.join(tmpdir, "dataset_archive")
+        archive_path = os.path.join(tmpdir, "dataset.zip")
         download_file(args.url, archive_path)
 
         extract_dir = os.path.join(tmpdir, "extracted")
