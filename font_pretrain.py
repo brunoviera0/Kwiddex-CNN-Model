@@ -3,24 +3,45 @@ import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torchvision import models
+from torchvision import models, datasets, transforms
+from torch.utils.data import DataLoader
 from tqdm import tqdm
-
-from dataset_manager import get_dataloaders
 
 dataset_name = os.environ["KWX_DATASET"]
 
-dtr, dval, dte, classes = get_dataloaders(
-    dataset_name,
-    batch_size=32,
-    num_workers=2
-)
+BASE_PATH = f"data/full_dataset/{dataset_name}"
+
+train_path = os.path.join(BASE_PATH, "train")
+val_path   = os.path.join(BASE_PATH, "val")
+test_path  = os.path.join(BASE_PATH, "test")
+
+if not os.path.exists(train_path):
+    raise RuntimeError(f"Dataset not found at {BASE_PATH}")
+
+# ImageNet normalization
+transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+])
+
+train_dataset = datasets.ImageFolder(train_path, transform=transform)
+val_dataset   = datasets.ImageFolder(val_path, transform=transform)
+test_dataset  = datasets.ImageFolder(test_path, transform=transform)
+
+classes = train_dataset.classes
+
+dtr = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=2)
+dval = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=2)
+dte = DataLoader(test_dataset, batch_size=32, shuffle=False, num_workers=2)
 
 if len(classes) < 3:
     raise ValueError(
-        f"Font pretraining expects many classes (like 48), but got {len(classes)}: {classes}"
+        f"Font pretraining expects many classes but got {len(classes)}: {classes}"
     )
-
 
 # Training parameters
 
