@@ -9,7 +9,12 @@ from tqdm import tqdm
 
 dataset_name = os.environ["KWX_DATASET"]
 
-BASE_PATH = f"data/full_dataset/{dataset_name}"
+BASE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "data",
+    "full_dataset",
+    dataset_name
+)
 
 train_path = os.path.join(BASE_PATH, "train")
 val_path   = os.path.join(BASE_PATH, "val")
