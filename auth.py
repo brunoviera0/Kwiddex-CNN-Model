@@ -1,22 +1,52 @@
+import os
 import hashlib
 import uuid
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Tuple
+import bcrypt
+from jose import jwt, JWTError
+
 
 USERS_FILE = Path("users.json")
 
-def hash_password(password: str, salt: str) -> str: #Hash password with salt using SHA-256
-    return hashlib.sha256((password + salt).encode()).hexdigest()
+#JWT config
+JWT_SECRET_KEY = os.environ.get("KWX_JWT_SECRET", "dev-fallback-not-for-production")
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRATION_MINUTES = 60
+
+
+#password hashing (bcrypt)
+def hash_password_bcrypt(password: str) -> str:
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+
+def verify_password_bcrypt(password: str, hashed: str) -> bool:
+    return bcrypt.checkpw(password.encode(), hashed.encode())
+
+
+#JWT tokens
+def create_token(user_id: str, username: str) -> str:
+    payload = {
+        "sub": user_id,
+        "username": username,
+        "exp": datetime.utcnow() + timedelta(minutes=JWT_EXPIRATION_MINUTES),
+        "iat": datetime.utcnow()
+    }
+    return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+
+
+def verify_token(token: str) -> Optional[dict]:
+    try:
+        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        return payload
+    except JWTError:
+        return None
 
 
 def generate_user_id() -> str:
     return f"USR-{uuid.uuid4().hex[:12].upper()}"
-
-
-def generate_salt() -> str:
-    return uuid.uuid4().hex
 
 
 def load_users() -> dict:
@@ -46,19 +76,18 @@ def create_user(username: str, password: str, organization: str = None, verifica
     
     #create user
     user_id = generate_user_id()
-    salt = generate_salt()
-    password_hash = hash_password(password, salt)
+    password_hash = hash_password_bcrypt(password)
     
     users[username] = {
         "user_id": user_id,
         "password_hash": password_hash,
-        "salt": salt,
+        "hash_method": "bcrypt",
+        "salt": "",
         "created_at": datetime.utcnow().isoformat() + "Z",
         "active": True,
-        "organization": organization,         
-        "verification_link": verification_link 
+        "organization": organization,
+        "verification_link": verification_link
     }
-    
     save_users(users)
     
     return True, user_id
@@ -75,13 +104,13 @@ def authenticate(username: str, password: str) -> Tuple[bool, Optional[str]]:
     if not user.get("active", True):
         return False, None
     
-    password_hash = hash_password(password, user["salt"])
+    hash_method = user.get("hash_method", "sha256")
     
-    if password_hash == user["password_hash"]:
-        return True, user["user_id"]
+    if hash_method == "bcrypt":
+        if verify_password_bcrypt(password, user["password_hash"]):
+            return True, user["user_id"]
     
     return False, None
-
 
 def get_user_id(username: str) -> Optional[str]:
     users = load_users()
@@ -126,7 +155,7 @@ def deactivate_user(username: str) -> bool:
 def list_users() -> list:
     users = load_users()
     return [
-        {"username": u, "user_id": data["user_id"], "active": data["active"]}
+        {"username": u, "user_id": data["user_id"], "active": data.get("active", True)}
         for u, data in users.items()
     ]
 
@@ -164,6 +193,8 @@ if __name__ == "__main__":
         if success:
             print(f"Login successful")
             print(f"User ID: {user_id}")
+            print(f"Token: {token}")
+
         else:
             print("Invalid username or password")
     
