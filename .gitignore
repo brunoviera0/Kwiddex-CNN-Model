@@ -1,1 +1,6 @@
 keys/kwiddex_private.pem
+users.json
+.env
+*.pt
+__pycache__/
+*.pyc
