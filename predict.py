@@ -1,4 +1,5 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException,Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from google.cloud import datastore, storage
@@ -13,7 +14,7 @@ import numpy as np
 import uuid
 import imgaug.augmenters as iaa
 from typing import Optional
-from auth import create_user, authenticate, get_user_id, get_profile_by_id
+from auth import create_user, authenticate, get_user_id, get_profile_by_id, create_token, verify_token
 from certification import certify_document, verify_pdf, certify_pdf, is_certified
 import certificate_store
 from fastapi.responses import Response
@@ -28,6 +29,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+#JWT auth scheme
+security = HTTPBearer(auto_error=False)
+
+#enforce JWT on protected endpoints
+async def require_auth(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Authentication required. Provide a Bearer token.")
+    
+    payload = verify_token(credentials.credentials)
+    if payload is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired token.")
+    
+    return payload
+
 
 #gcp
 GCP_PROJECT = "sentiment-analysis-379200"
@@ -59,7 +75,22 @@ def load_model():
     model.eval()
     return model
 
-model = load_model()
+
+
+try:
+    model = load_model()
+except Exception as e:
+    print(f"Could not load model: {e}")
+    print("Endpoints will return errors.")
+    model = None
+
+#check that model has been loaded
+def require_model():
+    if model is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Model not available. The model file could not be loaded at startup."
+        )
 
 
 #image preprocessing
@@ -125,8 +156,8 @@ class LoginRequest(BaseModel):
 class LoginResponse(BaseModel):
     success: bool
     user_id: Optional[str] = None
+    token: Optional[str] = None
     message: str
-
 
 #certification models
 class VerificationResponse(BaseModel):
@@ -297,6 +328,7 @@ def monte_carlo_inference(image: Image.Image, num_samples: int = 30) -> dict:
 
 @app.post("/predict", response_model=PredictionResponse)
 async def predict(file: UploadFile = File(...)):
+    require_model()
     try:
         content = await file.read()
         
@@ -359,6 +391,7 @@ async def predict(file: UploadFile = File(...)):
 
 @app.post("/monte_carlo", response_model=MonteCarloResponse)
 async def predict_monte_carlo(file: UploadFile = File(...), num_samples: int = 30):
+    require_model()
     try:
         content = await file.read()
         document_id, gcs_path = upload_to_gcs(content, file.filename, file.content_type)
@@ -444,10 +477,12 @@ async def certify_document_endpoint(
     reviewer_id: Optional[str] = None,
     client_reference: Optional[str] = None,
     notes: Optional[str] = None,
-    add_visible_page: bool = True
+    add_visible_page: bool = True,
+    user: dict = Depends(require_auth)
 ):
     """
     Use this AFTER human review has approved the document.
+    Requires authentication, pass Bearer token from /login.
     
     Parameters:
     - file: PDF or image (JPEG, PNG) to certify. Images are auto-converted to PDF.
@@ -458,9 +493,14 @@ async def certify_document_endpoint(
     
     Returns certified PDF as downloadable file.
     """
+    require_model()
     try:
         #read the uploaded file
         content = await file.read()
+        
+        #default reviewer_id to authenticated user if not provided
+        if not reviewer_id:
+            reviewer_id = user.get("sub")
         
         if not content:
             raise HTTPException(status_code=400, detail="Empty file uploaded.")
@@ -607,7 +647,7 @@ async def verify_certificate_endpoint(file: UploadFile = File(...)):
 
 
 @app.get("/certificate/{certificate_id}")
-async def get_certificate_details(certificate_id: str): #look up certificate using ID
+async def get_certificate_details(certificate_id: str, user: dict = Depends(require_auth)): #look up certificate using ID
     try:
         record = certificate_store.lookup_certificate(certificate_id)
         
@@ -664,16 +704,24 @@ async def register_user(request: RegisterRequest):
     )
 
 
-
-
 @app.post("/login", response_model=LoginResponse)
 async def login_user(request: LoginRequest):
     success, user_id = authenticate(request.username, request.password)
+    if success:
+        token = create_token(user_id, request.username)
+        return LoginResponse(
+            success=True,
+            user_id=user_id,
+            token=token,
+            message="Login successful"
+        )
     return LoginResponse(
-        success=success,
-        user_id=user_id,
-        message="Login successful" if success else "Invalid credentials"
+        success=False,
+        user_id=None,
+        token=None,
+        message="Invalid credentials"
     )
+
 
 
 

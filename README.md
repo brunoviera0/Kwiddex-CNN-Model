@@ -291,3 +291,27 @@ Next week:
 -Add rate limiting to the /register and /login endpoints using slowapi to prevent credential stuffing.
 
 -Update API to handle model loading failures at startup instead of crashing.
+
+
+
+2/15/26
+
+-Moved password hashing from SHA-256 to bcrypt
+
+-JWT authentication. /login endpoint returns a signed JWT token that expires along with user_id. /certify and /certificate/{id} endpoints now require valid token. /register, /login, /health, /verify-certificate, and /revoke-certificate endpoints remain public. When a user calls /certify without specifying a reviewer_id, it defaults to the authenticated user's ID from the token.
+
+-Graceful model loading in predict.py: now wrapped in a try/except block. If the model file is missing or corrupted, the API starts normally and returns a 503 error with a clear message on prediction and certification endpoints instead of crashing at startup. The /health endpoint reports whether the model is loaded.
+
+-Expanded unit tests from 38 to 57 tests. New tests cover JWT token generation and validation (5 tests), protected endpoint enforcement (9 tests), and bcrypt hashing (4 tests). All existing tests that hit protected endpoints have been updated to include authentication tokens.
+
+What comes next:
+
+-Determine if we want to go fully lightweight and remove all datastore functions. If so, /certificate/{id} and /document/{id} endpoints can be removed.
+
+-Downsides to going lightweight will be that to get a score, a user would have to run their document by the model every time, and we would not be able manually revoke certificates once they have been issued.
+
+-Add rate limiting using slowapi to /register and /login endpoints.
+
+-Connecting backend and frontend.
+
+-Bluehost deployment.
