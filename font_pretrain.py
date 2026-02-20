@@ -39,14 +39,38 @@ test_dataset  = datasets.ImageFolder(test_path, transform=transform)
 
 classes = train_dataset.classes
 
-dtr = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=2)
-dval = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=2)
-dte = DataLoader(test_dataset, batch_size=32, shuffle=False, num_workers=2)
-
 if len(classes) < 3:
     raise ValueError(
         f"Font pretraining expects many classes but got {len(classes)}: {classes}"
     )
+
+import random
+from torch.utils.data import Subset
+
+SUBSAMPLE_PER_CLASS = int(os.environ.get("SUBSAMPLE_PER_CLASS", "500"))
+SEED = int(os.environ.get("SEED", "42"))
+random.seed(SEED)
+
+def subsample_per_class(dataset, per_class):
+    by_label = {i: [] for i in range(len(dataset.classes))}
+    for idx, (_, label) in enumerate(dataset.samples):
+        by_label[label].append(idx)
+
+    chosen = []
+    for label, idxs in by_label.items():
+        random.shuffle(idxs)
+        chosen.extend(idxs[:per_class])
+
+    random.shuffle(chosen)
+    return Subset(dataset, chosen)
+
+if SUBSAMPLE_PER_CLASS > 0:
+    print(f"Subsampling train: {SUBSAMPLE_PER_CLASS} images per class")
+    train_dataset = subsample_per_class(train_dataset, SUBSAMPLE_PER_CLASS)
+
+dtr = DataLoader(train_dataset, batch_size=8, shuffle=True, num_workers=0)
+dval = DataLoader(val_dataset, batch_size=8, shuffle=False, num_workers=0)
+dte = DataLoader(test_dataset, batch_size=8, shuffle=False, num_workers=0)
 
 # Training parameters
 
@@ -61,17 +85,20 @@ MODEL_SAVE = f"best_pretrain_{dataset_name}.pt"
 DEVICE     = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def get_class_weights_from_loader(dataloader, num_classes):
+@torch.no_grad()
+def get_class_weights_from_dataset(dataset, num_classes):
     counts = torch.zeros(num_classes, dtype=torch.long)
 
-    for _, labels in dataloader:
-        counts += torch.bincount(labels, minlength=num_classes)
+    if isinstance(dataset, Subset):
+        for idx in dataset.indices:
+            _, label = dataset.dataset.samples[idx]
+            counts[label] += 1
+    else:
+        for _, label in dataset.samples:
+            counts[label] += 1
 
-    counts = counts.float()
-
-    # Inverse frequency weighting
+    counts = counts.float().clamp(min=1.0)
     weights = counts.sum() / (num_classes * counts)
-
     return weights
 
 
@@ -146,8 +173,7 @@ def main():
     model = build_model(len(classes)).to(DEVICE)
 
     # Automatically compute class weights from the train loader
-    class_weights = get_class_weights_from_loader(dtr, len(classes)).to(DEVICE)
-
+    class_weights = get_class_weights_from_dataset(train_dataset, len(classes)).to(DEVICE)
     print("Font classes:", len(classes))
     print("Auto class weights (first 10):", class_weights[:10].tolist())
 
@@ -155,7 +181,6 @@ def main():
 
     best_acc = 0.0
     best_state = model.state_dict()
-
 
     # Phase 1: train only the classifier head
 
@@ -256,7 +281,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# Example run:
-# export KWX_DATASET="font_dataset_bw"
-# python3 font_pretrain.py
