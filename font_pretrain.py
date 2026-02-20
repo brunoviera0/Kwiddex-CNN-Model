@@ -281,3 +281,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# export KWX_DATASET=font_recognition
+# export SUBSAMPLE_PER_CLASS=500
+# python3 font_pretrain.py
